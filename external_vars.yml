@@ -1,0 +1,25 @@
+---
+rg_name: "devops-interview-gauntlet-x-mbude"
+location: "westeurope"
+
+vnet_name: "manvnet01"
+vnet_add: "10.25.0.0/16"
+
+Sub1_name: "mansubnet01"
+Sub1_add: "10.25.1.0/26"
+
+Sub2_name: "mansubnet02"
+sub2_add: "10.25.2.0/26"
+
+vm_name1: "manvm01"
+vm_name2: "manvm02"
+vm_size: "Standard_DS1_v2"
+
+nsg_name: "mannsg01"
+
+stg_name: "mankforcestgacc01"
+password: "Manohar@12345"
+
+plan_name: "manplan01"
+webapp_name: "manwebapp01"
+

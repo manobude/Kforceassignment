@@ -1,0 +1,257 @@
+---
+
+hosts: localhost
+gather_facts: false
+vars:
+  appservicefacts
+  kforcelb-ip
+
+vars_files:
+    - /vars/external_vars.yml
+
+tasks:
+  - name: 'Create a virtual network'
+    azure_rm_virtualnetwork:
+      resource_group: "{{ rg_name }}"
+      location: "{{location}}"
+      name: "{{ vnet_name }}"
+      address_prefixes_cidr: "{{vnet_add}}"
+      tags:
+        createdby: "manohar"
+
+  - name: 'Create a Subnet'
+    azure_rm_subnet:
+      resource_group: "{{ rg_name }}"
+      virtual_network_name: "{{ vnet_name }}"
+      name: "{{sub1_name}}"
+      address_prefix_cidr: "{{Sub1_add}}"
+
+  - name: 'Create a Subnet'
+    azure_rm_subnet:
+      resource_group: "{{ rg_name }}"
+      virtual_network_name: "{{ vnet_name }}"
+      name: "{{sub2_name}}"
+      address_prefix_cidr: "{{Sub2_add}}"
+      delegations:
+      - name: 'Delegations'
+        serviceName: 'Microsoft.Web/serverFarms'
+        actions: 'Microsoft.Network/virtualNetworks/subnets/action'
+  
+  - name: 'Create a new Network Securtiy group'
+    azure_rm_securitygroup:
+      resource_group: "{{ rg_name }}"
+      name: "{{nsg_name}}"
+      purge_rules: yes
+      rules:
+          - name: RDPInboundPort
+            protocol: TCP
+            direction: Inbound
+            source_port_range: "*"
+            destination_port_range: 22
+            access: Allow
+            priority: 100
+            destination_address_prefix: "10.25.0.0/16"
+            
+          - name: "CustomInternet_TCP"
+            priority: 110
+            direction: Inbound
+            access: Allow
+            protocol: TCP
+            source_port_range: "*"
+            destination_port_range: "443"
+            source_address_prefix: "Internet"
+            destination_address_prefix: "10.25.0.0/16"
+    
+  - name: Create a public ip address for load balancer
+    azure_rm_publicipaddress:
+      resource_group: "{{ rg_name }}"
+      allocation_method: 'static'
+      name: 'kforcelb-ip'
+  
+  - name: Get facts for one Public IP
+    azure_rm_publicipaddress_info:
+      resource_group: "{{ rg_name }}"
+      name: 'kforcelb-ip'
+  
+  - name: Create a public ip address
+    azure_rm_publicipaddress:
+      resource_group: "{{ rg_name }}"
+      allocation_method: 'dynamic'
+      loop:
+        - name: '{{vm_name1}}-PIP'
+        - name: '{{vm_name2}}-PIP'
+
+  - name: Create a network interface with ip configurations
+    azure_rm_networkinterface:
+      name: '{{vm_name1}}-NIC'
+      resource_group: "{{ rg_name }}"
+      virtual_network_name: "{{ vnet_name }}"
+      security_group:
+        name: '{{nsg_name}}'
+        resource_group: "{{ rg_name }}"
+      ip_configurations:
+        - name: ipconfig1
+          subnet_name: "{{sub1_name}}"
+          public_ip_address_allocation: static
+          public_ip_address_name: "{{vm_name1}}-PIP"
+
+  - name: Create a network interface with ip configurations
+    azure_rm_networkinterface:
+      name: '{{vm_name2}}-NIC'
+      resource_group: "{{ rg_name }}"
+      virtual_network_name: "{{ vnet_name }}"
+      security_group:
+        name: '{{nsg_name}}'
+        resource_group: "{{ rg_name }}"
+      ip_configurations:
+        - name: ipconfig2
+          subnet_name: "{{sub2_name}}"
+          public_ip_address_allocation: static
+          public_ip_address_name: "{{vm_name2}}-PIP"
+
+  - name: create a Storage account
+    azure_rm_storageaccount:
+      resource_group: "{{ rg_name }}"
+      name: "{{stg_name}}"
+      type: Standard_LRS
+      tags:
+        createdby: "manohar"
+  
+  - name: Create an availability set with advanced options
+    azure_rm_availabilityset:
+      name: '{{vm_name2}}-Avset'
+      resource_group: "{{ rg_name }}"
+      location: "{{location}}"
+      platform_update_domain_count: 2
+      platform_fault_domain_count: 2
+      sku: Aligned
+
+  - name: Create a VM
+    azure_rm_virtualmachine:
+      resource_group: "{{ rg_name }}"
+      vm_size: {{Vm_size}}
+      availability_set: '{{vm_name2}}-Avset'
+      admin_username: azureuser
+      admin_password: "{{ password }}"
+      os_disk_size_gb: 128
+      managed_disk_type: Standard_LRS
+      os_type: Windows
+      image:
+        offer: WindowsServer
+        publisher: MicrosoftWindowsServer
+        sku: 2019-Datacenter
+        version: latest
+      winrm:
+        protocal: http
+      loop:
+        - {name: '{{vm_name1}}',os_disk_name: "{{vm_name1}}-OSdisk",network_interfaces: "{{vm_name1}}-NIC" }
+        - {name: '{{vm_name2}}',os_disk_name: "{{vm_name2}}-OSdisk",network_interfaces: "{{vm_name2}}-NIC" }
+
+ 
+  - name: Create VM script extension to Install IIS
+    azure_rm_virtualmachineextension:
+      name: vm_extension_install_iis
+      resource_group: "{{ rg_name }}"
+      virtual_machine_name: '{{vm_name1}}'
+      publisher: Microsoft.Compute
+      virtual_machine_extension_type: CustomScriptExtension
+      type_handler_version: '1.9'
+      settings: '{fileUris": ["https://raw.githubusercontent.com/manobude/Kforceassignment/main/cats.jpg", "https://raw.githubusercontent.com/manobude/Kforceassignment/main/index.html", "https://raw.githubusercontent.com/manobude/Kforceassignment/main/newwebsite.ps1"],
+                  "commandToExecute": "powershell -ExecutionPolicy Unrestricted -File newwebsite.ps1"]'
+      
+  - name: Create App Service Plan
+    azure_rm_appserviceplan:
+      resource_group: "{{ rg_name }}"
+      name: "{{ plan_name }}"
+      is_linux: true
+      sku: S1
+      number_of_workers: 1
+
+  - name: Create App Service on Linux
+    azure_rm_webapp:
+      resource_group: "{{ rg_name }}"
+      name: "{{ webapp_name }}"
+      plan:
+        resource_group: "{{ rg_name }}"
+        name: "{{ plan_name }}"
+        is_linux: true
+        sku: S1
+        number_of_workers: 1
+  
+  - name: Get facts of existing App service plan
+    azure_rm_appserviceplan_facts:
+      resource_group: "{{ resource_group }}"
+      name: "{{ plan_name }}"
+    register: appservicefacts
+  
+  - name: "Azure App Service and Vnet Integration with Azure Cli"
+      shell: az webapp vnet-integration add -g "{{ rg_name }}" -n "{{webapp_name}}" --vnet "{{vnet_name}}" --subnet "{{Sub2_name}}"
+  
+  - name: Create an auto scale setting
+    azure_rm_autoscale:
+      name: scale
+      resource_group: "{{ rg_name }}"
+      target: '{{appservicefacts.appserviceplans[0].Id}}'
+      enabled: true
+      profiles:
+        name: "default"
+        count: '1'
+        max_count: '1'
+        min_count: '5'
+        rules:
+         -  metric_name: Percentage CPU
+            metric_resource_uri: '{{appservicefacts.appserviceplans[0].Id}}'
+            time_aggregation: Average
+            time_window: 10
+            time_grain: 1
+            direction: Increase
+            value: '1'
+            threshold: 80
+            cooldown: 5
+            statistic: Average
+            operator: GreaterThan
+            type: ChangeCount
+            recurrence_days: '1'
+            recurrence_frequency: Week
+
+  - name: create load balancer
+    azure_rm_loadbalancer:
+      resource_group: "{{ rg_name }}"
+      name: 'kforce'
+      frontend_ip_configurations:
+        - name: 'frontend_lb_config'
+          public_ip_address: 'kforcelb-ip'
+      backend_address_pools:
+        - name: backaddrpool01
+      probes:
+        - name: prob01
+          port: 443
+      inbound_nat_pools:
+        name: inp01
+        frontend_ip_configuration_name: 'frontend_lb_config'
+        protocol: Tcp
+        frontend_port_range_start: 443
+        frontend_port_range_end: 444
+        backend_port: 443
+    load_balancing_rules:
+      - name: lbrule01
+        frontend_ip_configuration: frontend_lb_config
+        backend_address_pool: backaddrpool01
+        frontend_port: 443
+        backend_port: 443
+        probe: prob01
+        load_distribution: 'SourceIPProtocol'
+    inbound_nat_rules:
+      - name: inboundnatrule0
+        backend_port: 443
+        protocol: Tcp
+        frontend_port: 443
+        frontend_ip_configuration: frontend_lb_config
+
+          
+      
+      
+
+
+    
+      
